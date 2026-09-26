@@ -1,12 +1,11 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { useAuth } from '../context/AuthContext.jsx'
-import { similarity, bestMatch } from '../lib/fuzzy.js'
-import { Upload, Loader2, Check, X, AlertTriangle, Save, ArrowRight, ArrowLeft, Image as ImageIcon, Wand2, ListChecks, Flag } from 'lucide-react'
+import { bestMatch } from '../lib/fuzzy.js'
+import { Upload, Loader2, Check, AlertTriangle, Save, ArrowRight, ArrowLeft, Wand2, ListChecks } from 'lucide-react'
 
 const STEPS = ['Setup', 'Upload', 'Review OCR', 'Papan Mentah']
-const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 const OCR_ENDPOINT = 'https://1c01-103-130-18-160.ngrok-free.app'
 
 function fileToBase64(file) {
@@ -30,18 +29,17 @@ export default function WizardBR() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // Setup
   const [tournamentName, setTournamentName] = useState('')
   const [perKill, setPerKill] = useState(1)
   const [placementPts, setPlacementPts] = useState([12,9,8,7,6,5,4,3,2,1,0,0])
 
-  // Upload
+  const [uploadMode, setUploadMode] = useState('manual')
   const [topFile, setTopFile] = useState(null)
   const [bottomFile, setBottomFile] = useState(null)
   const [topPreview, setTopPreview] = useState('')
   const [bottomPreview, setBottomPreview] = useState('')
+  const [manualText, setManualText] = useState('')
 
-  // OCR results
   const [results, setResults] = useState([])
 
   useEffect(() => {
@@ -55,10 +53,8 @@ export default function WizardBR() {
         setTournament(tr.data)
         setTournamentName(tr.data.name || '')
         setPerKill(tr.data.point_per_kill || 1)
-        if (Array.isArray(tr.data.point_rules?.placement_points))
-          setPlacementPts(tr.data.point_rules.placement_points)
-        else if (Array.isArray(tr.data.placement_points))
-          setPlacementPts(tr.data.placement_points)
+        if (Array.isArray(tr.data.point_rules?.placement_points)) setPlacementPts(tr.data.point_rules.placement_points)
+        else if (Array.isArray(tr.data.placement_points)) setPlacementPts(tr.data.placement_points)
       }
       setTeams(te || [])
       const nums = (ma.data || []).map(x => x.match_number)
@@ -79,45 +75,26 @@ export default function WizardBR() {
 
   async function runOCR() {
     setErr('')
-    if (!topFile || !bottomFile) {
-      setErr('Harap unggah Screenshot Atas dan Screenshot Bawah secara utuh.')
-      return
-    }
-    if (!session?.access_token) {
-      setErr('Sesi Berakhir. Silakan login kembali untuk melanjutkan.')
-      return
-    }
-
+    if (!topFile || !bottomFile) return setErr('Harap unggah Screenshot Atas dan Screenshot Bawah secara utuh.')
+    if (!session?.access_token) return setErr('Sesi Berakhir. Silakan login kembali.')
     setBusy(true)
     try {
-      const ocrRes = await fetch(`${OCR_ENDPOINT}/api/ocr`, {
+      const r = await fetch(`${OCR_ENDPOINT}/api/ocr`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true'
-        },
-        body: JSON.stringify({
-          crops: [
-            { image: topFile, region: 'top' },
-            { image: bottomFile, region: 'bottom' }
-          ]
-        })
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({ crops: [{ image: topFile, region: 'top' }, { image: bottomFile, region: 'bottom' }] })
       })
-
-      if (!ocrRes.ok) {
-        if ([502, 503, 404].includes(ocrRes.status))
-          throw new Error('Mohon Maaf, Server VIP sedang Offline / Maintenance. Silakan coba beberapa saat lagi atau hubungi Admin.')
-        const j = await ocrRes.json().catch(() => ({}))
-        throw new Error(j.error?.message || j.error || 'Server OCR sedang dalam persiapan/maintenance.')
+      if (!r.ok) {
+        if ([502, 503, 404].includes(r.status)) throw new Error('Server VIP sedang Offline / Maintenance.')
+        const j = await r.json().catch(() => ({}))
+        throw new Error(j.error?.message || j.error || 'Server OCR sedang maintenance.')
       }
-
-      const data = await ocrRes.json()
+      const data = await r.json()
       const detected = Array.isArray(data) ? data : (data.results || data.teams || [])
-
       const mapped = detected.map((d, idx) => {
         const name = d.detectedName || d.team_name || d.name || ''
         const match = bestMatch(name, teams)
-        let conf = d.confidence ?? (d.low_confidence === true ? 0.5 : 0.8)
+        let conf = d.confidence ?? 0.8
         if (!name || name.trim() === '') conf = 0
         return {
           rank: d.rank || idx + 1,
@@ -125,15 +102,12 @@ export default function WizardBR() {
           mapped_team_id: match?.team?.id || '',
           kill_count: d.kills_detail ? d.kills_detail.reduce((s, x) => s + (Number(x) || 0), 0) : (d.total_kills || d.kills || 0),
           kills_confidence: conf,
-          player_count: d.player_count || (Array.isArray(d.players) ? d.players.length : 0),
+          player_count: d.player_count || 0,
           ambiguous: match?.ambiguous || false
         }
       })
-
       setResults(mapped)
       setStep(2)
-
-      // quota tracking
       const today = new Date().toISOString().slice(0, 10)
       const unlocked = profile?.has_unlocked_ai || (profile?.subscription_expires_at && new Date(profile.subscription_expires_at) > new Date())
       if (!unlocked) {
@@ -144,14 +118,35 @@ export default function WizardBR() {
         refreshProfile()
       }
     } catch (e) {
-      let msg = e.message || 'Server OCR sedang dalam persiapan.'
-      if (msg.includes('Failed to fetch') || msg.includes('Network')) {
-        msg = 'Mohon Maaf, Server VIP sedang Offline / Maintenance.'
-      }
+      let msg = e.message || 'Server OCR sedang maintenance.'
+      if (msg.includes('Failed to fetch') || msg.includes('Network')) msg = 'Server VIP sedang Offline / Maintenance.'
       setErr(msg)
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
+  }
+
+  function parseManual() {
+    setErr('')
+    const lines = manualText.split('\n').map(l => l.trim()).filter(Boolean)
+    if (!lines.length) return setErr('Isi minimal 1 baris.')
+    const parsed = lines.map((line, idx) => {
+      let rank = idx + 1, team = line, kills = 0
+      const rankMatch = line.match(/^(\d+)[\.\)\-]\s*(.+)$/)
+      if (rankMatch) { rank = parseInt(rankMatch[1]); team = rankMatch[2] }
+      const killMatch = team.match(/^(.*?)[,\-]\s*(\d+)\s*$/)
+      if (killMatch) { team = killMatch[1].trim(); kills = parseInt(killMatch[2]) }
+      const match = bestMatch(team, teams)
+      return {
+        rank,
+        team_name_ocr: team,
+        mapped_team_id: match?.team?.id || '',
+        kill_count: kills,
+        kills_confidence: 1,
+        player_count: 0,
+        ambiguous: match?.ambiguous || false
+      }
+    })
+    setResults(parsed)
+    setStep(2)
   }
 
   function updateRow(i, patch) {
@@ -168,13 +163,10 @@ export default function WizardBR() {
     setErr('')
     setBusy(true)
     try {
-      // insert match
       const { data: matchRow, error: me } = await supabase.from('matches').insert([{
-        tournament_id: id,
-        match_number: matchNum
+        tournament_id: id, match_number: matchNum
       }]).select().single()
       if (me) throw me
-
       const rows = results
         .filter(r => r.mapped_team_id && r.team_name_ocr)
         .map(r => ({
@@ -184,25 +176,20 @@ export default function WizardBR() {
           placement_rank: Number(r.rank) || null,
           total_match_point: computePoints(r.kill_count, r.rank)
         }))
-
       if (rows.length) {
         const { error: re } = await supabase.from('match_results').insert(rows)
         if (re) throw re
       }
-
       setStep(3)
     } catch (e) {
       setErr(e.message || 'Gagal menyimpan.')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   if (!tournament) return <div className="p-8 text-gray-500">Memuat…</div>
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Header */}
       <div>
         <h2 className="text-2xl font-bold flex items-center gap-2">
           <Wand2 className="w-6 h-6 text-[#E04E27]" /> Wizard BR
@@ -210,7 +197,6 @@ export default function WizardBR() {
         <div className="text-sm text-gray-500 mt-1">{tournament.name} · Match #{matchNum}</div>
       </div>
 
-      {/* Steps */}
       <div className="flex items-center gap-1 overflow-x-auto pb-1">
         {STEPS.map((s, i) => (
           <div key={i} className="flex items-center whitespace-nowrap">
@@ -218,9 +204,7 @@ export default function WizardBR() {
               i === step ? 'bg-[#E04E27] text-white' :
               i < step ? 'bg-[#E04E27]/10 text-[#E04E27]' :
               'bg-gray-100 text-gray-500'
-            }`}>
-              {i + 1}. {s}
-            </div>
+            }`}>{i + 1}. {s}</div>
             {i < STEPS.length - 1 && <div className="w-3 h-px bg-gray-300" />}
           </div>
         ))}
@@ -233,7 +217,6 @@ export default function WizardBR() {
         </div>
       )}
 
-      {/* STEP 0 — Setup */}
       {step === 0 && (
         <div className="bg-white border rounded-lg p-5 space-y-4">
           <div>
@@ -277,43 +260,68 @@ export default function WizardBR() {
         </div>
       )}
 
-      {/* STEP 1 — Upload */}
       {step === 1 && (
         <div className="bg-white border rounded-lg p-5 space-y-4">
-          <div className="grid md:grid-cols-2 gap-4">
-            <UploadBox
-              label="Screenshot Atas"
-              preview={topPreview}
-              onFile={handleFile('top')}
-            />
-            <UploadBox
-              label="Screenshot Bawah"
-              preview={bottomPreview}
-              onFile={handleFile('bottom')}
-            />
-          </div>
-          <div className="flex justify-between pt-2">
-            <button onClick={() => setStep(0)}
-              className="px-4 py-2 border rounded flex items-center gap-2 text-sm">
-              <ArrowLeft className="w-4 h-4" /> Kembali
+          <div className="flex border-b -mx-5 px-5 gap-1">
+            <button onClick={() => setUploadMode('manual')}
+              className={`px-3 py-2 text-sm font-semibold border-b-2 ${uploadMode === 'manual' ? 'border-[#E04E27] text-[#E04E27]' : 'border-transparent text-gray-500'}`}>
+              Input Manual
             </button>
-            <button onClick={runOCR} disabled={busy}
-              className="px-5 py-2 bg-[#E04E27] text-white rounded flex items-center gap-2 disabled:opacity-50">
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />}
-              {busy ? 'Memproses…' : 'Proses OCR'}
+            <button onClick={() => setUploadMode('ocr')}
+              className={`px-3 py-2 text-sm font-semibold border-b-2 ${uploadMode === 'ocr' ? 'border-[#E04E27] text-[#E04E27]' : 'border-transparent text-gray-500'}`}>
+              Upload Screenshot (OCR)
             </button>
           </div>
+
+          {uploadMode === 'manual' ? (
+            <>
+              <div className="text-sm text-gray-500">
+                Format per baris: <code className="bg-gray-100 px-1 rounded">Rank. Nama Tim, Kill</code>
+                <br />Contoh: <code className="bg-gray-100 px-1 rounded">1. EVOS, 12</code>
+              </div>
+              <textarea
+                value={manualText}
+                onChange={e => setManualText(e.target.value)}
+                rows={12}
+                placeholder={"1. EVOS, 12\n2. RRQ, 9\n3. Bigetron, 7\n4. Aerowolf, 5"}
+                className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
+              />
+              <div className="flex justify-between pt-2">
+                <button onClick={() => setStep(0)} className="px-4 py-2 border rounded flex items-center gap-2 text-sm">
+                  <ArrowLeft className="w-4 h-4" /> Kembali
+                </button>
+                <button onClick={parseManual}
+                  className="px-5 py-2 bg-[#E04E27] text-white rounded flex items-center gap-2">
+                  Lanjut Review <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="grid md:grid-cols-2 gap-4">
+                <UploadBox label="Screenshot Atas" preview={topPreview} onFile={handleFile('top')} />
+                <UploadBox label="Screenshot Bawah" preview={bottomPreview} onFile={handleFile('bottom')} />
+              </div>
+              <div className="flex justify-between pt-2">
+                <button onClick={() => setStep(0)} className="px-4 py-2 border rounded flex items-center gap-2 text-sm">
+                  <ArrowLeft className="w-4 h-4" /> Kembali
+                </button>
+                <button onClick={runOCR} disabled={busy}
+                  className="px-5 py-2 bg-[#E04E27] text-white rounded flex items-center gap-2 disabled:opacity-50">
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />}
+                  {busy ? 'Memproses…' : 'Proses OCR'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {/* STEP 2 — Review OCR */}
       {step === 2 && (
         <div className="bg-white border rounded-lg p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-bold">Review OCR — {results.length} baris terbaca</h3>
-            <div className="text-xs text-gray-500">
-              {results.filter(r => !r.mapped_team_id).length} belum ke-mapping
-            </div>
+            <h3 className="font-bold">Review — {results.length} baris</h3>
+            <div className="text-xs text-gray-500">{results.filter(r => !r.mapped_team_id).length} belum di-mapping</div>
           </div>
           <div className="overflow-x-auto border rounded-lg">
             <table className="w-full text-sm">
@@ -335,9 +343,9 @@ export default function WizardBR() {
                         className="w-full border rounded px-2 py-1 text-right text-xs" />
                     </td>
                     <td className="p-1">
-                      <div className="text-xs font-mono truncate max-w-[180px]" title={r.team_name_ocr}>
-                        {r.team_name_ocr || <span className="text-red-500">kosong</span>}
-                      </div>
+                      <input value={r.team_name_ocr}
+                        onChange={e => updateRow(i, { team_name_ocr: e.target.value })}
+                        className="w-full border rounded px-2 py-1 text-xs font-mono" />
                     </td>
                     <td className="p-1">
                       <select value={r.mapped_team_id}
@@ -352,9 +360,7 @@ export default function WizardBR() {
                         onChange={e => updateRow(i, { kill_count: parseInt(e.target.value) || 0 })}
                         className="w-full border rounded px-2 py-1 text-right text-xs" />
                     </td>
-                    <td className="p-2 text-right font-bold text-xs">
-                      {computePoints(r.kill_count, r.rank)}
-                    </td>
+                    <td className="p-2 text-right font-bold text-xs">{computePoints(r.kill_count, r.rank)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -363,18 +369,17 @@ export default function WizardBR() {
           <div className="flex justify-between pt-2">
             <button onClick={() => setStep(1)}
               className="px-4 py-2 border rounded flex items-center gap-2 text-sm">
-              <ArrowLeft className="w-4 h-4" /> Upload Ulang
+              <ArrowLeft className="w-4 h-4" /> Kembali
             </button>
             <button onClick={saveToDB} disabled={busy}
               className="px-5 py-2 bg-[#E04E27] text-white rounded flex items-center gap-2 disabled:opacity-50">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {busy ? 'Menyimpan…' : 'Simpan ke Papan'}
+              {busy ? 'Menyimpan…' : 'Simpan'}
             </button>
           </div>
         </div>
       )}
 
-      {/* STEP 3 — Papan Mentah */}
       {step === 3 && (
         <div className="bg-white border rounded-lg p-5 space-y-4">
           <div className="flex items-center gap-2 text-green-600">
@@ -395,10 +400,7 @@ export default function WizardBR() {
             })}
           </div>
           <div className="flex justify-between pt-2">
-            <button onClick={() => nav(`/tournament/${id}`)}
-              className="px-4 py-2 border rounded text-sm">
-              Ke Turnamen
-            </button>
+            <button onClick={() => nav(`/tournament/${id}`)} className="px-4 py-2 border rounded text-sm">Ke Turnamen</button>
             <button onClick={() => nav(`/leaderboard/${id}`)}
               className="px-5 py-2 bg-[#E04E27] text-white rounded text-sm flex items-center gap-2">
               Leaderboard <ArrowRight className="w-4 h-4" />
