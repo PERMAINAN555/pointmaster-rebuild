@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase.js'
 
-const Ctx = createContext(null)
+export const AuthCtx = createContext(null)
 
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
@@ -10,11 +10,7 @@ export function AuthProvider({ children }) {
 
   async function loadProfile(id) {
     if (!id) return setProfile(null)
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', id)
-      .single()
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).single()
     if (!error) setProfile(data)
   }
 
@@ -37,26 +33,28 @@ export function AuthProvider({ children }) {
     (profile?.subscription_expires_at && new Date(profile.subscription_expires_at) > new Date())
   )
 
-  const value = {
-    session,
-    profile,
-    isPro,
-    loading,
-    signIn: (email, password) => supabase.auth.signInWithPassword({ email, password }),
-    signUp: (email, password, fullName) =>
-      supabase.auth.signUp({
-        email, password,
-        options: { data: { full_name: fullName } }
-      }),
-    signOut: () => supabase.auth.signOut(),
-    refreshProfile: () => session && loadProfile(session.user.id)
-  }
+  return (
+    <AuthCtx.Provider value={{
+      session, profile, isPro, loading,
+      signIn: (email, password) => supabase.auth.signInWithPassword({ email, password }),
+      signUp: (email, password, fullName) =>
+        supabase.auth.signUp({ email, password, options: { data: { full_name: fullName } } }),
+      signOut: () => supabase.auth.signOut(),
+      refreshProfile: () => session && loadProfile(session.user.id)
+    }}>
+      {children}
+    </AuthCtx.Provider>
+  )
+}
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+const FALLBACK = {
+  session: null, profile: null, isPro: false, loading: false,
+  signIn: async () => ({ error: { message: 'Auth belum siap' } }),
+  signUp: async () => ({ error: { message: 'Auth belum siap' } }),
+  signOut: async () => {},
+  refreshProfile: () => {}
 }
 
 export function useAuth() {
-  const v = useContext(Ctx)
-  if (!v) throw new Error('useAuth must be inside <AuthProvider>')
-  return v
+  return useContext(AuthCtx) || FALLBACK
 }
