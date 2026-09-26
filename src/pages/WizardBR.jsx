@@ -6,7 +6,7 @@ import { bestMatch } from '../lib/fuzzy.js'
 import { Upload, Loader2, Check, AlertTriangle, Save, ArrowRight, ArrowLeft, Wand2, ListChecks } from 'lucide-react'
 
 const STEPS = ['Setup', 'Upload', 'Review OCR', 'Papan Mentah']
-const OCR_ENDPOINT = 'https://1c01-103-130-18-160.ngrok-free.app'
+const OCR_ENDPOINT = 'http://127.0.0.1:8000'
 
 function fileToBase64(file) {
   return new Promise((res, rej) => {
